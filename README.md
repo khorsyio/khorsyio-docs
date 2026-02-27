@@ -1,28 +1,25 @@
-# Документация khorsyio
+# khorsyio Documentation
 
-Эта папка содержит структурированную документацию по основным элементам фреймворка. Начните с оглавления ниже. Каждый раздел ссылается на связанные темы и назад к этому оглавлению.
+This folder contains structured documentation on the core elements of the framework. Start with the table of contents below. Each section links to related topics and back to this index.
 
-- [Быстрый старт](docs/getting_started.md)
-- [Обзор архитектуры](docs/architecture.md)
-- [Приложение (App)](docs/app.md)
-- [Настройки (Settings)](docs/settings.md)
-- [HTTP: Router, Request/Response, CORS](docs/http.md)
-- [Шина событий (Bus) и журнал событий](docs/bus.md)
-- [События: Envelope, Context, Error](docs/events.md)
-- [Обработчики (Handlers) и DI](docs/handlers.md)
-- [Домены (Domain) и неймспейсы](docs/domain.md)
-- [Транспорт WebSocket (SocketTransport/Client)](docs/transport.md)
-- [HTTP-клиент (HttpClient)](docs/client.md)
-- [База данных (Database)](docs/db.md)
-- [Запросы SQLAlchemy: фильтры, сортировка, пагинация, курсор](docs/query.md)
-- [Многоядерная архитектура (Multiprocessing)](docs/multi_core.md)
+- [Getting Started](getting_started.md)
+- [Architecture Overview](architecture.md)
+- [Application (App)](app.md)
+- [Settings](settings.md)
+- [HTTP: Router, Request, Response, CORS](http.md)
+- [Event Bus and Event Log](bus.md)
+- [Events: Envelope, Context, Error](events.md)
+- [Handlers and DI](handlers.md)
+- [Domains and Namespaces](domain.md)
+- [WebSocket Transport (SocketTransport/Client)](transport.md)
+- [HTTP Client (HttpClient)](client.md)
+- [Database](db.md)
+- [SQLAlchemy Queries: filters, sorting, pagination, cursor](query.md)
+- [Multiprocessing Architecture](multi_core.md)
 
-## Паттерны и методология разработки
+## Patterns and Development Methodology
 
-- [Методология декомпозиции](docs/decomposition.md)
-- [Шаблоны кода и рецепты](docs/templates.md)
-- [Анализ применимости и архитектурные паттерны](docs/architecture_patterns.md)
-- [Руководство для LLM (Khorsyio System Prompt)](docs/llm_guidelines.md)
-
-
-
+- [Block Decomposition Methodology](decomposition.md)
+- [Code Templates and Recipes](templates.md)
+- [Applicability Analysis and Architecture Patterns](architecture_patterns.md)
+- [LLM Guidelines (Khorsyio System Prompt)](llm_guidelines.md)
