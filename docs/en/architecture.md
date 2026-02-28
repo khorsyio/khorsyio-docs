@@ -33,7 +33,4 @@
 - [Database](db.md), [Query-хелперы](query.md)
 
 ## Известные ограничения (Troubleshooting)
-- **DB (DML)**: `Database.fetchrow` в ранних версиях фреймворка не использует `begin()` - при `INSERT RETURNING` данные могут откатываться (`ROLLBACK`). Нужно использовать ручной commit или `await db.execute`.
-- **Router (HTTP)**: Будьте осторожны с перекрывающимися маршрутами (например, GET `/{slug}` и PUT `/{id}`) - маршрутизатор может прервать поиск, если паттерн совпал, а метод нет. Защищенные и статические маршруты объявляйте первыми.
 - **JWT**: Поле `sub` обязано быть строкой для `PyJWT >= 2.0.0` (не `int`).
-- **Testing (Event Loops)**: При тестировании с `app.bus` (создающим `asyncio.Queue` в `__init__`) обязательно используйте pytest-фикстуры области видимости `function`, чтобы избежать ошибок `Future attached to a different loop`.
