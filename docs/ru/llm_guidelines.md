@@ -254,6 +254,12 @@ await self._db.execute("insert into users (name, email) values ($1, $2)", name, 
 await self._db.executemany("insert into logs (msg) values ($1)", [("a",), ("b",)])
 ```
 
+> **ВАЖНО (Ограничения фреймворка):** 
+> 1. Если фреймворк еще не пропатчен для автокоммита DML в `fetchrow`, не используй `fetchrow` или `fetchval` для `INSERT/UPDATE ... RETURNING`, иначе данные откатятся (`ROLLBACK`). Используй `await self._db.execute()`, если не нужен возвращаемый id, или делай явный `begin()`.
+> 2. В `PyJWT 2.x+` поле `"sub"` должно быть строкой. При создании токена обязательно используй `str(user_id)`.
+> 3. Объекты ASGI-запросов ожидают параметр пути в `req.scope["path_params"]`. В роутах нужно быть осторожнее с перекрывающимися паттернами (например, `Route("PUT", "/markets/{id}")` и `Route("GET", "/markets/{slug}")` — при не совпадении метода `khorsyio` может вернуть `404`). Перекрывающиеся роуты нужно располагать осторожно.
+> 4. Для `pytest-asyncio` фикстуры `app` и `client` (с запущенным `Bus`) должны иметь `function` scope, иначе `asyncio.Queue` в `bus` привяжется к закрытому Event Loop.
+> 5. Роуты API всегда должны возвращать ошибку в ключе `error` (а не `message`), так как `Response.error` по умолчанию формирует `{"error": "...", "code": "..."}`.
 ## Обработка ошибок в цепочке
 
 Два подхода.

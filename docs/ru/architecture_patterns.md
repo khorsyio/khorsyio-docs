@@ -370,3 +370,12 @@ app.bus.event\_log.recent(20, trace\_id='abc123')
 | Стратегия ошибок | Status в struct (мягкий, данные проходят дальше) или exception (жесткий, цепочка прерывается) |
 | Namespace | Убедиться что handler добавлен в Domain.handlers и namespace корректен |
 
+# **9\. Распространенные ошибки (Troubleshooting & Limitations)**
+
+Ниже приведен список частых ошибок, которые допускает LLM при генерации кода для `khorsyio`. Учитывай их всегда:
+
+1. **DML-запросы в Database**: Встроенные `fetchrow` и `fetchval` (до обновления фреймворка) делают `ROLLBACK` после выполнения из-за отсутствия явного `commit`. При использовании `INSERT ... RETURNING` нужно применять `async with db.engine.begin()` или использовать `execute()`.
+2. **Тип Claim "sub" в JWT**: В библиотеке PyJWT 2.x+ поле `sub` обязано быть строковой переменной. При генерации токена всегда используй `str(user_id)`.
+3. **Роутинг API**: Перекрытие роутов типа `GET /markets/{slug}` и `PUT /markets/{id}` может вызывать ошибку 404/405 из-за багов ранних версий маршрутизатора фреймворка. Старайся располагать статические пути и пути с методами, требующими авторизации (например, PUT), выше в списке `routes`.
+4. **Fixture Scopes в тестах**: `khorsyio.core.bus` инициализирует `asyncio.Queue` в конструкторе. Чтобы `pytest-asyncio` не падал с `Future attached to a different loop`, фикстуры `app` и `client` должны быть уровня `scope="function"`.
+5. **Сообщения об ошибках из API**: Стандартный метод `Response.error` сериализует ответ как `{"error": "<msg>", "code": "..."}`. Поэтому в тестах нужно искать `.json().get("error")`, а не `"message"`.
