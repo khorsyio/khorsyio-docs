@@ -1,33 +1,39 @@
-# Architecture Overview
+# Обзор архитектуры
 
-See: [Documentation](README.md)
+См. оглавление: [Документация](README.md)
 
-Core elements
-- App — entry point, assembles all subsystems, manages lifecycle
-- HTTP — Router/Request/Response/CorsConfig, ASGI application with middleware hooks
-- Bus — internal event bus with queues, timeouts, and error handling
-- Structs — Context, Envelope, Error, serialization convention via msgspec
-- Handlers — base class and contract for event processing
-- Domain — grouping of handlers and HTTP routes with namespace and DI
-- Transport — SocketTransport (ASGI) and SocketClient (socket.io client)
-- Client — HttpClient on httpx for outbound HTTP requests
-- DB — Database (SQLAlchemy async engine) and query helpers
+Основные элементы
+- App — точка входа, собирает все подсистемы, управляет жизненным циклом
+- HTTP — Router/Request/Response/CorsConfig, простой ASGI-приложение с middleware-хуками
+- Bus — внутренняя событийная шина с очередями, таймаутами и обработкой ошибок
+- Structs — Context, Envelope, Error, конвенция сериализации через msgspec
+- Handlers — базовый класс и контракт для обработки событий
+- Domain — группировка хендлеров и HTTP-маршрутов + namespace/DI
+- Transport — SocketTransport (ASGI) и SocketClient (клиент socket.io)
+- Client — HttpClient на httpx для внешних HTTP-запросов
+- DB — Database (SQLAlchemy async engine) и query-хелперы
 
-HTTP request flow
-1) ASGI reaches HttpApp
-2) Router finds the handler by method and path
-3) Your handler works with Request and sends Response
+Поток запроса HTTP
+1) ASGI попадает в HttpApp
+2) Router находит хендлер по методу/пути
+3) Ваш хендлер работает с Request и отправляет Response
 
-Event flow
-1) Source publishes Envelope to Bus (publish or request)
-2) Bus dispatches to the matching Handler
-3) Handler returns a new Envelope or None
-4) Bus continues processing or replies to the initiator
+Поток события
+1) Источник публикует Envelope в Bus (publish или request)
+2) Bus диспетчит на подходящий Handler
+3) Handler возвращает новый Envelope или None
+4) Bus продолжает обработку или отвечает инициатору
 
-Related sections
+Связанные разделы
 - [App](app.md)
 - [HTTP](http.md)
-- [Bus](bus.md) and [Events](events.md)
+- [Bus](bus.md) и [События](events.md)
 - [Handlers](handlers.md), [Domain](domain.md)
 - [Transport](transport.md)
-- [Database](db.md), [Query helpers](query.md)
+- [Database](db.md), [Query-хелперы](query.md)
+
+## Известные ограничения (Troubleshooting)
+- **DB (DML)**: `Database.fetchrow` в ранних версиях фреймворка не использует `begin()` - при `INSERT RETURNING` данные могут откатываться (`ROLLBACK`). Нужно использовать ручной commit или `await db.execute`.
+- **Router (HTTP)**: Будьте осторожны с перекрывающимися маршрутами (например, GET `/{slug}` и PUT `/{id}`) - маршрутизатор может прервать поиск, если паттерн совпал, а метод нет. Защищенные и статические маршруты объявляйте первыми.
+- **JWT**: Поле `sub` обязано быть строкой для `PyJWT >= 2.0.0` (не `int`).
+- **Testing (Event Loops)**: При тестировании с `app.bus` (создающим `asyncio.Queue` в `__init__`) обязательно используйте pytest-фикстуры области видимости `function`, чтобы избежать ошибок `Future attached to a different loop`.

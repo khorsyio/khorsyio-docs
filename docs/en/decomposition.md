@@ -1,59 +1,59 @@
-# Block Decomposition Methodology
+# Методология блочной декомпозиции
 
-How to break a business task into blocks for khorsyio.
+Как разбивать бизнес-задачу на блоки для khorsyio.
 
-## Decomposition algorithm
+## Алгоритм декомпозиции
 
-### Step 1. Define the process boundaries
+### Шаг 1. Определи границы процесса
 
-Input — what arrives from the user or trigger.
-Output — what the final result should be.
-Source — http, websocket, scheduler, or another handler.
+Вход: что приходит от пользователя или триггера
+Выход: что должно получиться в итоге
+Источник: http, websocket, scheduler, другой handler
 
-### Step 2. Identify processing stages
+### Шаг 2. Выдели этапы обработки
 
-Ask: what are the logically separate actions that happen between input and output? Each action that can be described in one sentence is a candidate for a block.
+Задай вопрос: какие логически отдельные действия происходят между входом и выходом? Каждое действие которое можно описать одним предложением - кандидат на блок.
 
-Signs that something is a separate block
-- The action has its own responsibility (validation, calculation, check, persistence)
-- The action can be replaced by a different implementation
-- The action can be reused in another process
-- The action accesses a separate resource (different table, external service)
+Признаки что это отдельный блок
+- У действия своя ответственность (валидация, расчет, проверка, сохранение)
+- Действие может быть заменено другой реализацией
+- Действие может быть переиспользовано в другом процессе
+- Действие обращается к отдельному ресурсу (другая таблица, внешний сервис)
 
-Signs that actions belong in the same block
-- The actions always execute together and make no sense individually
-- There is no logical boundary between them
-- Splitting them adds no clarity
+Признаки что действия должны быть в одном блоке
+- Действия всегда выполняются вместе и не имеют смысла по отдельности
+- Между ними нет логической границы
+- Разделение не добавляет ясности
 
-### Step 3. Define structures
+### Шаг 3. Определи структуры
 
-For each block define what it receives and what it returns. These are `msgspec.Struct`.
+Для каждого блока определи: что он получает, что возвращает. Это msgspec.Struct.
 
-Two struct patterns
+Два паттерна структур
 
-**Pipeline (shared state).** One struct is enriched as it passes through the chain. Each block adds its own fields.
+**Паттерн Pipeline (единый state)**. Один struct обогащается по мере прохождения. Каждый блок дописывает свои поля.
 
 ```python
 class OrderState(msgspec.Struct):
-    # input data (filled by the first block)
+    # входные данные (заполняет первый блок)
     product: str = ""
     quantity: int = 0
-    # data from PriceHandler
+    # данные от PriceHandler
     unit_price: float = 0
     subtotal: float = 0
-    # data from DiscountHandler
+    # данные от DiscountHandler
     discount_pct: float = 0
     total: float = 0
-    # data from StockHandler
+    # данные от StockHandler
     stock_reserved: bool = False
-    # pass-through status
+    # статус прохождения
     status: str = ""
     steps: list = msgspec.field(default_factory=list)
 ```
 
-When to use: linear chains where each stage enriches the shared result. Convenient for tracing — the full path is visible in the final object.
+Когда использовать: линейные цепочки где каждый этап обогащает общий результат. Удобно для трассировки - видно весь путь.
 
-**Transform (input/output).** Each block has its own input and output struct.
+**Паттерн Transform (вход/выход)**. Каждый блок имеет свой input и output struct.
 
 ```python
 class RawData(msgspec.Struct):
@@ -69,22 +69,22 @@ class Formatted(msgspec.Struct):
     body: str = ""
 ```
 
-When to use: stages with fundamentally different data. Input and output differ substantially. Blocks are more reusable.
+Когда использовать: этапы с разной природой данных. Вход и выход существенно отличаются. Блоки более переиспользуемы.
 
-### Step 4. Draw the event graph
+### Шаг 4. Нарисуй граф событий
 
 ```
 input_event -> handler_1 -> event_a -> handler_2 -> event_b -> handler_3 -> output_event
 ```
 
-Verify that
-- Every published event has a subscriber
-- There are no cycles (unless intentional)
-- The final event is either caught by bus.request or handled by a terminal block
+Проверь что
+- Каждое опубликованное событие имеет подписчика
+- Нет циклов (если не нужны специально)
+- Финальное событие либо ловится bus.request, либо обрабатывается терминальным блоком
 
-### Step 5. Define the namespace
+### Шаг 5. Определи namespace
 
-If blocks belong to the same business process, group them in a Domain with a namespace.
+Если блоки принадлежат одному бизнес-процессу, объедини в Domain с namespace.
 
 ```python
 order = Domain()
@@ -92,26 +92,26 @@ order.namespace = "order"
 order.handlers = [ValidateHandler, PriceHandler, ...]
 ```
 
-Events become `order.validate`, `order.priced`, etc.
+События станут order.validate, order.priced и т.д.
 
-## Decomposition examples
+## Примеры декомпозиции
 
-### User registration
+### Пример: регистрация пользователя
 
-Task: user sends email and password, system registers them.
+Задача: пользователь шлет email + password, система регистрирует.
 
-Stages
-1. Validation (email format, password length)
-2. Uniqueness check (email not taken)
-3. Password hashing
-4. Save to database
-5. Send welcome email
+Этапы
+1. Валидация (формат email, длина пароля)
+2. Проверка уникальности (email не занят)
+3. Хэширование пароля
+4. Сохранение в базу
+5. Отправка welcome email
 
 ```
 user.validate -> user.check_unique -> user.hash_password -> user.save -> user.notify
 ```
 
-Structures
+Структуры
 
 ```python
 class RegisterIn(msgspec.Struct):
@@ -127,66 +127,74 @@ class UserState(msgspec.Struct):
     steps: list = msgspec.field(default_factory=list)
 ```
 
-Blocks 1–4 use the Pipeline pattern (shared UserState). Block 5 (notify) is terminal with `publishes=""` because no response is expected.
+Блоки 1-4 используют паттерн Pipeline (единый UserState). Блок 5 (notify) - терминальный, publishes="" потому что ничего не ждет ответа.
 
-### Payment processing
+### Пример: обработка платежа
 
-Stages
-1. Card validation
-2. Limit check
-3. Fraud check
-4. Charge via gateway
-5. Balance update
-6. Receipt generation
+Этапы
+1. Валидация карты
+2. Проверка лимитов
+3. Фрод-проверка
+4. Списание через gateway
+5. Обновление баланса
+6. Генерация чека
 
 ```
 payment.validate_card -> payment.check_limits -> payment.fraud_check -> payment.charge -> payment.update_balance -> payment.receipt
 ```
 
-The fraud_check block can use conditional routing: if suspicious, it publishes `payment.review` instead of `payment.charge`.
+Блок fraud_check может использовать условную маршрутизацию: если подозрительно, публикует payment.review вместо payment.charge.
 
-### ETL pipeline (worker)
+### Пример: ETL pipeline (worker)
 
-Scheduled task every hour. No HTTP.
+Scheduled task каждый час. Нет http.
 
 ```
 etl.extract -> etl.transform -> etl.validate -> etl.load -> etl.notify
 ```
 
-Blocks use the Transform pattern: Extract returns RawRows, Transform returns CleanRows, Validate returns ValidatedRows, Load returns LoadResult.
+Блоки используют паттерн Transform: Extract возвращает RawRows, Transform возвращает CleanRows, Validate возвращает ValidatedRows, Load возвращает LoadResult.
 
-### Chat with moderation (WebSocket)
+### Пример: чат с модерацией (websocket)
 
 ```
 chat.message -> chat.moderate -> chat.enrich -> chat.broadcast
 ```
 
-`moderate` checks for prohibited content. `enrich` adds timestamp and username. `broadcast` sends via transport.
+moderate проверяет на запрещенный контент. enrich добавляет timestamp, username. broadcast рассылает через transport.
 
-## Rules for a good block
+## Правила хорошего блока
 
-1. One block, one responsibility. If the block description contains "and", it probably needs to be split.
+1. Один блок - одна ответственность. Если описание блока содержит "и", скорее всего его надо разделить.
 
-2. A block does not know who comes before or after it. It works only with its own input and context.
+2. Блок не знает кто до него и кто после. Он работает только со своим входом и контекстом.
 
-3. A block is idempotent where possible. Repeated calls with the same input produce the same result.
+3. Блок idempotent по возможности. Повторный вызов с тем же входом дает тот же результат.
 
-4. Errors are handled explicitly — either via status in the struct or via exception. Never swallowed silently.
+4. Ошибки обрабатываются явно. Либо через статус в struct, либо через exception. Не молча проглатываются.
 
-5. A block logs its work via `ctx.trace_id`. This allows the full request path to be reconstructed.
+5. Блок логирует свою работу через ctx.trace_id. Это позволяет отследить весь путь запроса.
 
-6. Timeout matches the task. A fast calculation: 5s. An external API call: 30s. A heavy ETL: 120s.
+6. Timeout адекватен задаче. Быстрый расчет - 5s. Вызов внешнего API - 30s. Тяжелый ETL - 120s.
 
-7. Structs are defined before logic. Contract first, implementation second.
+7. Структуры определяются до логики. Сначала контракт, потом реализация.
 
-## Anti-patterns
+## Антипаттерны
 
-**God handler** — a block that does everything. If `process` is longer than 30 lines, consider splitting.
+**God handler** - блок который делает все. Если process длиннее 30 строк, подумай о разделении.
 
-**Hidden coupling** — a block directly imports and calls another block. Use events instead.
+**Скрытая связность** - блок напрямую импортирует и вызывает другой блок. Используй события.
 
-**Implicit contract** — a block accepts `dict` instead of a struct. Validation and documentation are lost.
+**Неявный контракт** - блок принимает dict вместо struct. Теряется валидация и документация.
 
-**Global state** — a block writes to a global variable. Use structs or the database.
+**Глобальное состояние** - блок пишет в глобальную переменную. Используй struct или базу.
 
-**Ignoring status** — a block does not check the status from the previous one. In a pipeline every block must verify that the previous stage succeeded.
+**Игнорирование статуса** - блок не проверяет статус от предыдущего. В pipeline каждый блок должен проверить что предыдущий этап прошел.
+
+**Неявные транзакции (DML без commit)** - использование `fetchrow` / `fetchval` для `INSERT/UPDATE ... RETURNING` без ручного коммита или патча `begin()`. Всегда используй `await db.execute` для DML или пропатченные методы.
+
+**Перекрытие роутов** - регистрация маршрутов с одинаковой структурой, но разными методами (например, `PUT /users/{id}` и `GET /users/{slug}`). Это приводит к ошибкам маршрутизатора 404/405. Статические и защищенные маршруты должны быть объявлены раньше.
+
+**Глобальный Event Loop в тестах** - фикстуры `pytest` с запущенным `app.bus` (где создается `asyncio.Queue`) в `session` scope ломают последующие тесты. Фикстуры `app`/`client` должны быть уровня `function`.
+
+**Неверный тип JWT sub** - PyJWT 2.x+ отклонит `sub` типа `int`. Конвертируй идентификатор: `str(user_id)`.

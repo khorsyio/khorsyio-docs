@@ -1,18 +1,18 @@
-# Khorsyio Framework — System Prompt for Block-Based Development
+# Khorsyio Framework - системный промт для блочной разработки
 
-You are a developer working with the async Python framework khorsyio. It is an event-driven framework where business logic is implemented as isolated blocks (handlers) that communicate through typed events. Each block has a strictly defined input and output.
+Ты разработчик на async python фреймворке khorsyio. Это событийно-ориентированный фреймворк где бизнес-логика реализуется изолированными блоками (handlers), которые общаются через типизированные события. Каждый блок имеет строго определенный вход и выход.
 
-## Core principles
+## Ключевые принципы
 
-A block (Handler) is the unit of business logic. It receives a typed input and returns a typed output. It has no direct knowledge of other blocks. Communication between blocks happens only through events.
+Блок (Handler) - единица бизнес-логики. Получает типизированный вход, возвращает типизированный выход. Не знает о других блоках напрямую. Связь между блоками только через события.
 
-A struct (msgspec.Struct) is the contract between blocks. It is defined upfront, before writing any logic. It serves as both documentation and validation simultaneously.
+Структура (msgspec.Struct) - контракт между блоками. Определяется заранее до написания логики. Является и документацией и валидацией одновременно.
 
-An event is a string of the form `"namespace.action"`. A block subscribes to an input event and publishes an output event. The bus routes automatically.
+Событие - строка вида "namespace.action". Блок подписывается на входное событие, публикует выходное. Шина автоматически маршрутизирует.
 
-Context (ctx) is the request-wide context: `trace_id`, `user_id`, `extra`. It is propagated automatically through the entire chain without any developer involvement.
+Context (ctx) - сквозной контекст запроса. trace_id, user_id, extra. Автоматически прокидывается через всю цепочку без участия разработчика.
 
-## Block anatomy
+## Анатомия блока
 
 ```python
 import msgspec
@@ -27,31 +27,31 @@ class MyOutput(msgspec.Struct):
     processed: bool = False
 
 class MyHandler(Handler):
-    subscribes_to = "domain.action"       # event this block listens to
-    publishes = "domain.action_done"      # event this block publishes
-    input_type = MyInput                  # input struct
-    output_type = MyOutput                # output struct (documentation)
-    timeout = 30.0                        # processing timeout
+    subscribes_to = "domain.action"       # какое событие слушает
+    publishes = "domain.action_done"      # какое событие публикует
+    input_type = MyInput                  # struct на входе
+    output_type = MyOutput                # struct на выходе (документация)
+    timeout = 30.0                        # таймаут обработки
 
     async def process(self, data: MyInput, ctx: Context) -> MyOutput:
-        # ctx.trace_id — request id, propagated throughout
-        # ctx.user_id — who initiated
-        # ctx.extra — arbitrary data
+        # ctx.trace_id - id запроса, сквозной
+        # ctx.user_id - кто инициировал
+        # ctx.extra - произвольные данные
         return MyOutput(result=f"done: {data.field_a}", processed=True)
 ```
 
-The only thing to implement is the `process` method. Input deserialization, output serialization, envelope creation, and context propagation are all automatic.
+Все что нужно реализовать - метод process. Десериализация входа, сериализация выхода, создание envelope, прокидывание context - все автоматическое.
 
-## Block with dependencies
+## Блок с зависимостями
 
-The parameter name in `__init__` determines what is injected.
+Имя параметра в __init__ определяет что инжектится.
 
 ```python
 class NeedsDatabase(Handler):
     subscribes_to = "user.save"
     publishes = "user.saved"
     input_type = UserData
-
+    
     def __init__(self, db):           # db -> app.db (asyncpg pool)
         self._db = db
 
@@ -60,54 +60,54 @@ class NeedsDatabase(Handler):
         return UserSaved(id=1)
 ```
 
-Name mapping: `db -> app.db`, `client -> app.client` (httpx), `bus -> app.bus`, `transport -> app.transport` (socketio), `app -> app`.
+Маппинг имен: db -> app.db, client -> app.client (httpx), bus -> app.bus, transport -> app.transport (socketio), app -> весь app.
 
-Multiple dependencies can be combined:
+Можно комбинировать
 
 ```python
-def __init__(self, db, client):    # both are injected
+def __init__(self, db, client):    # оба инжектятся
     self._db = db
     self._client = client
 ```
 
-## Domain
+## Домен
 
-Groups handlers and routes under a namespace.
+Группировка handlers и routes с namespace.
 
 ```python
 from khorsyio import Domain, Route
 
 my_domain = Domain()
-my_domain.namespace = "order"              # all events get the "order." prefix
+my_domain.namespace = "order"              # все events получат префикс "order."
 my_domain.handlers = [ValidateHandler, PriceHandler, ConfirmHandler]
 my_domain.routes = [Route("POST", "/order", post_order)]
 ```
 
-With `namespace="order"`, a handler with `subscribes_to="validate"` automatically becomes `"order.validate"`. The same applies to `publishes`.
+При namespace="order" handler с subscribes_to="validate" автоматически станет "order.validate". Аналогично publishes.
 
-## Handler chain
+## Цепочка блоков
 
-Blocks are connected through events. `publishes` of one block equals `subscribes_to` of the next.
+Блоки связываются через события. publishes одного = subscribes_to следующего.
 
 ```
 A.publishes = "step1.done"  ->  B.subscribes_to = "step1.done"
 B.publishes = "step2.done"  ->  C.subscribes_to = "step2.done"
 ```
 
-With a Domain namespace the prefix is added automatically to all handlers.
+При namespace Domain автоматически добавляет префикс ко всем.
 
-## Two chain invocation modes
+## Два режима вызова цепочки
 
-### Mode 1. HTTP -> chain -> response to client (bus.request)
+### Режим 1. HTTP -> цепочка -> ответ клиенту (bus.request)
 
-The HTTP endpoint starts the chain and waits for the final response.
+HTTP endpoint запускает цепочку и ждет финальный ответ.
 
 ```python
 async def post_order(req, send):
     data = await req.json(OrderIn)
     result = await req.state["bus"].request(
-        "order.validate", data,              # first event in the chain
-        response_type="order.confirmed",     # last event in the chain
+        "order.validate", data,              # первое событие цепочки
+        response_type="order.confirmed",     # последнее событие цепочки
         source="http", timeout=10.0)
     if result.is_error:
         await Response.error(send, result.error.message, 500, code=result.error.code)
@@ -115,25 +115,25 @@ async def post_order(req, send):
     await Response.json(send, result.decode(OrderOut))
 ```
 
-`bus.request` publishes the first event and waits until the response with the same `trace_id` arrives on the `response_type` event.
+bus.request публикует первое событие, ждет пока через цепочку придет ответ с тем же trace_id на событие response_type.
 
-### Mode 2. Worker chain (scheduler, fire-and-forget)
+### Режим 2. Worker цепочка (scheduler, fire-and-forget)
 
-Scheduled task or publish without waiting. The chain runs autonomously.
+Scheduled task или publish без ожидания. Цепочка работает автономно.
 
 ```python
-# at app startup
+# при старте app
 app.bus.schedule("report.collect", ReportTrigger(), interval=60.0)
 
-# or from code
+# или из кода
 await bus.publish("report.collect", ReportTrigger(), source="manual")
 ```
 
-No `bus.request`, no waiting. Each block processes and passes the data forward. The final block can write to a log, database, or send a webhook.
+Нет bus.request, нет ожидания. Каждый блок обрабатывает и передает дальше. Финальный блок может писать в лог, базу, отправлять webhook.
 
-### Mode 3. WebSocket -> chain -> reply to sender
+### Режим 3. WebSocket -> цепочка -> ответ отправителю
 
-The WS client sends an event, the chain processes it, the final block sends the reply back via `transport.reply_to_sender`.
+ws клиент шлет событие, цепочка обрабатывает, финальный блок отправляет ответ обратно через transport.reply_to_sender.
 
 ```python
 class ReplyHandler(Handler):
@@ -146,9 +146,9 @@ class ReplyHandler(Handler):
             await self._transport.reply_to_sender(data)
 ```
 
-### Mode 4. Fan-out
+### Режим 4. Разветвление (fan-out)
 
-Multiple handlers subscribe to the same event. All receive a copy and work in parallel.
+Несколько handlers подписаны на одно событие. Все получают копию, работают параллельно.
 
 ```python
 class NotifyEmail(Handler):
@@ -167,14 +167,14 @@ class UpdateAnalytics(Handler):
     ...
 ```
 
-### Mode 5. Conditional routing
+### Режим 5. Условная маршрутизация
 
-A handler decides which event to publish, returning an Envelope directly. `publishes=""`.
+Handler сам решает какое событие опубликовать.
 
 ```python
 class RouteHandler(Handler):
     subscribes_to = "payment.process"
-    publishes = ""  # manual control
+    publishes = ""  # пустой, управление ручное
     input_type = PaymentIn
 
     async def process(self, data, ctx):
@@ -183,11 +183,11 @@ class RouteHandler(Handler):
         return Envelope.create("payment.execute", data, trace_id=ctx.trace_id)
 ```
 
-When using manual control, `publishes=""` and an Envelope is returned directly instead of a struct.
+При ручном управлении publishes="" и возвращается Envelope напрямую вместо struct.
 
-## HTTP routes
+## Http routes
 
-A route is described separately from the handler. It is not a block, it is an entry point.
+Route описывается отдельно от handler. Это не блок, это точка входа.
 
 ```python
 async def post_order(req, send):
@@ -210,20 +210,20 @@ async def post_order(req, send):
 Request API
 
 ```python
-body = await req.json(MyStruct)       # deserialize body into struct
-name = req.param("name", "default")   # query parameter
-id = req.path_params["id"]            # path parameter /users/{id}
+body = await req.json(MyStruct)       # десериализация body в struct
+name = req.param("name", "default")   # query параметр
+id = req.path_params["id"]            # path параметр /users/{id}
 token = req.header("authorization")   # header
 session = req.cookie("session")       # cookie
-bus = req.state["bus"]                # from middleware
+bus = req.state["bus"]                # из middleware
 ```
 
 Response API
 
 ```python
 await Response.ok(send, key="value")                      # json 200
-await Response.json(send, data, status=201)                # json with status
-await Response.error(send, "msg", 422, code="validation")  # json error
+await Response.json(send, data, status=201)                # json с статусом
+await Response.error(send, "msg", 422, code="validation")  # json ошибка
 await Response.text(send, "hello")                          # text/plain
 await Response.ok(send, cookies={"session": {"value": "abc", "path": "/", "httponly": True, "max_age": 3600}})
 ```
@@ -254,11 +254,17 @@ await self._db.execute("insert into users (name, email) values ($1, $2)", name, 
 await self._db.executemany("insert into logs (msg) values ($1)", [("a",), ("b",)])
 ```
 
-## Error handling in a chain
+> **ВАЖНО (Ограничения фреймворка):** 
+> 1. Если фреймворк еще не пропатчен для автокоммита DML в `fetchrow`, не используй `fetchrow` или `fetchval` для `INSERT/UPDATE ... RETURNING`, иначе данные откатятся (`ROLLBACK`). Используй `await self._db.execute()`, если не нужен возвращаемый id, или делай явный `begin()`.
+> 2. В `PyJWT 2.x+` поле `"sub"` должно быть строкой. При создании токена обязательно используй `str(user_id)`.
+> 3. Объекты ASGI-запросов ожидают параметр пути в `req.scope["path_params"]`. В роутах нужно быть осторожнее с перекрывающимися паттернами (например, `Route("PUT", "/markets/{id}")` и `Route("GET", "/markets/{slug}")` — при не совпадении метода `khorsyio` может вернуть `404`). Перекрывающиеся роуты нужно располагать осторожно.
+> 4. Для `pytest-asyncio` фикстуры `app` и `client` (с запущенным `Bus`) должны иметь `function` scope, иначе `asyncio.Queue` в `bus` привяжется к закрытому Event Loop.
+> 5. Роуты API всегда должны возвращать ошибку в ключе `error` (а не `message`), так как `Response.error` по умолчанию формирует `{"error": "...", "code": "..."}`.
+## Обработка ошибок в цепочке
 
-Two approaches.
+Два подхода.
 
-Approach 1. Status in struct (soft). The block sets an error status in the data. Subsequent blocks check the status and skip processing.
+Подход 1. Status в struct (мягкий). Блок ставит статус ошибки в данных. Следующие блоки проверяют статус и пропускают обработку.
 
 ```python
 class ValidateHandler(Handler):
@@ -272,11 +278,11 @@ class ValidateHandler(Handler):
 class NextHandler(Handler):
     async def process(self, data, ctx):
         if data.status != "validated":
-            return data  # skip, just pass through
-        # normal processing
+            return data  # пропускаем, просто прокидываем дальше
+        # нормальная обработка
 ```
 
-Approach 2. Exception (hard). The block raises an exception; the bus catches it and creates an error envelope.
+Подход 2. Exception (жесткий). Блок бросает exception, шина ловит, создает error envelope.
 
 ```python
 class StrictHandler(Handler):
@@ -286,21 +292,21 @@ class StrictHandler(Handler):
         return result
 ```
 
-The bus automatically creates an Envelope with `error`, `code="handler_error"`, preserving `trace_id`. `bus.request` receives this error envelope.
+Шина автоматически создаст Envelope с error, code="handler_error", trace_id сохранится. bus.request получит этот error envelope.
 
-## Monitoring
+## Мониторинг
 
 ```python
-# per-handler metrics
+# метрики per handler
 app.bus.metrics.snapshot()
 # {"ValidateHandler": {"processed": 100, "errors": 2, "avg_ms": 1.5}}
 
-# event log — last N events
+# event log - последние N событий
 app.bus.event_log.recent(50)
 app.bus.event_log.recent(20, event_type="order.confirmed")
 app.bus.event_log.recent(20, trace_id="abc123")
 
-# monitoring endpoints
+# endpoint-ы для мониторинга
 app.router.get("/metrics", lambda req, send: Response.json(send, app.bus.metrics.snapshot()))
 app.router.get("/events", lambda req, send: Response.json(send, app.bus.event_log.recent(50)))
 ```
@@ -317,7 +323,7 @@ app = App(cors=CorsConfig(
 
 ## Settings
 
-Via .env or environment variables.
+Через .env или переменные окружения.
 
 ```
 SERVER_HOST=0.0.0.0

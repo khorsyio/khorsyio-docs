@@ -1,364 +1,381 @@
+  
 **Khorsyio Framework**
 
-Applicability Analysis and Architecture Patterns
+Анализ применимости и архитектурные паттерны
 
-Version 2.0  |  2026
+Версия 2.0  |  2026
 
-# 1. Core framework concepts
+# **1\. Ключевые концепции фреймворка**
 
-Khorsyio is an async Python framework with an event-driven architecture. Business logic is implemented through isolated blocks (handlers) that interact exclusively through typed events on the bus. There are no direct calls between blocks. Stack: asyncio, msgspec (serialization), asyncpg (postgres), socketio (websocket), ASGI (http).
+Khorsyio \- async Python фреймворк с событийно-ориентированной архитектурой. Бизнес-логика реализуется через изолированные блоки (handlers), которые взаимодействуют исключительно через типизированные события на шине. Прямые вызовы между блоками отсутствуют. Стек: asyncio, msgspec (сериализация), asyncpg (postgres), socketio (websocket), ASGI (http).
 
-| Concept | Description |
+| Концепция | Описание |
 | :---- | :---- |
-| Handler | Unit of business logic. One input (subscribes_to), one output (publishes), isolated state. Implements a single method process(data, ctx) |
-| Struct (msgspec) | Typed data contract between blocks. Serves as documentation, validation, and serialization simultaneously. 10–50x faster than pydantic |
-| Event | A string of the form namespace.action (e.g. order.validate). The bus routes by subscriptions automatically |
-| Context (ctx) | Request-wide context: trace_id, user_id, extra (dict). Automatically propagated through the entire chain when forwarding between handlers |
-| Domain | Grouping of handlers and routes under a shared namespace. With namespace='order', event 'validate' becomes 'order.validate' |
-| Bus | Central bus. Routing, bus.request (publish + wait), per-handler metrics, event log, scheduled tasks, graceful shutdown with drain |
-| Error | Standard error structure: code, message, source, trace_id, details. Envelope.is_error for checking |
-| DI | Dependency injection by parameter name in __init__: db, client, bus, transport, app. No decorators or configuration |
+| Handler | Единица бизнес-логики. Один вход (subscribes\_to), один выход (publishes), изолированное состояние. Реализует единственный метод process(data, ctx) |
+| Struct (msgspec) | Типизированный контракт данных между блоками. Является документацией, валидацией и сериализацией одновременно. Быстрее pydantic в 10-50 раз |
+| Событие | Строка вида namespace.action (например order.validate). Шина маршрутизирует по подпискам автоматически |
+| Context (ctx) | Сквозной контекст запроса: trace\_id, user\_id, extra (dict). Автоматически прокидывается через всю цепочку при forward между handlers |
+| Domain | Группировка handlers и routes с единым namespace. При namespace='order' событие 'validate' становится 'order.validate' |
+| Bus | Центральная шина. Маршрутизация, bus.request (publish \+ wait), метрики per-handler, event log, scheduled tasks, graceful shutdown с drain |
+| Error | Стандартная структура ошибки: code, message, source, trace\_id, details. Envelope.is\_error для проверки |
+| DI | Инъекция зависимостей через имя параметра в \_\_init\_\_: db, client, bus, transport, app. Без декораторов и конфигурации |
 
-## Block anatomy
+## **Анатомия блока**
 
-Every handler defines four attributes and implements a single `process` method. Input deserialization, output serialization, envelope creation, and context propagation are handled automatically by the framework.
+Каждый handler определяет четыре атрибута и реализует единственный метод process. Десериализация входа, сериализация выхода, создание envelope и прокидывание context выполняются фреймворком автоматически.
 
-```python
 class PriceHandler(Handler):
-    subscribes_to = 'validated'      # input event
-    publishes = 'priced'             # output event
-    input_type = OrderState          # input struct
-    output_type = OrderState         # output struct
-    timeout = 5.0                    # processing timeout
 
-    async def process(self, data: OrderState, ctx: Context) -> OrderState:
-        data.unit_price = CATALOG[data.product]
-        data.total = data.unit_price * data.quantity
-        data.status = 'priced'
+    subscribes\_to \= 'validated'      \# входное событие
+
+    publishes \= 'priced'             \# выходное событие
+
+    input\_type \= OrderState           \# struct на входе
+
+    output\_type \= OrderState          \# struct на выходе
+
+    timeout \= 5.0                     \# таймаут обработки
+
+    async def process(self, data: OrderState, ctx: Context) \-\> OrderState:
+
+        data.unit\_price \= CATALOG\[data.product\]
+
+        data.total \= data.unit\_price \* data.quantity
+
+        data.status \= 'priced'
+
         return data
-```
 
-## Dependency injection
+## **Инъекция зависимостей**
 
-The parameter name in `__init__` determines what is injected. The framework automatically passes the right component when creating a handler through Domain. Mapping: `db -> app.db` (asyncpg pool), `client -> app.client` (httpx session), `bus -> app.bus`, `transport -> app.transport` (socketio), `app -> the full application object`. Multiple dependencies can be combined.
+Имя параметра в \_\_init\_\_ определяет что инжектится. Фреймворк автоматически передает нужный компонент при создании handler через Domain. Маппинг: db \-\> app.db (asyncpg pool), client \-\> app.client (httpx session), bus \-\> app.bus, transport \-\> app.transport (socketio), app \-\> весь объект приложения. Можно комбинировать несколько зависимостей.
 
-```python
 class FetchHandler(Handler):
-    def __init__(self, db, client):     # receives app.db and app.client
-        self._db = db
-        self._client = client
-```
 
-## Two data structure patterns
+    def \_\_init\_\_(self, db, client):     \# получит app.db и app.client
 
-**Pipeline (shared state).** One struct is enriched as it passes through the chain. Each block adds its own fields without touching others. Useful for tracing — the final object shows the full path. Used in linear business processes (order, ticket, airdrop).
+        self.\_db \= db
 
-**Transform (input/output).** Each block has its own input and output struct. Input and output differ substantially by nature. Blocks are more reusable. Used in ETL, report pipelines, and data processing.
+        self.\_client \= client
 
-# 2. Framework operating modes
+## **Два паттерна структур данных**
 
-The framework supports five data flow modes. Modes can be combined: one process can start as an HTTP request (mode 1), include conditional routing (mode 5), and end with fan-out notifications (mode 4).
+**Pipeline (единый state).** Один struct обогащается по мере прохождения цепочки. Каждый блок дописывает свои поля, не трогая чужие. Удобно для трассировки: в финальном объекте видно весь путь. Используется в линейных бизнес-процессах (заказ, заявка, airdrop).
 
-## Mode 1. HTTP -> chain -> response to client
+**Transform (вход/выход).** Каждый блок имеет свой input и output struct. Вход и выход существенно отличаются по природе. Блоки более переиспользуемы. Используется в ETL, report pipeline, data processing.
 
-An HTTP endpoint starts the chain via `bus.request` and synchronously waits for the final response with a matching `trace_id`. The client receives the result of the entire chain in a single HTTP response. Suitable for REST APIs where the client expects a result.
+# **2\. Режимы работы фреймворка**
 
-| # | Event | Description |
+Фреймворк поддерживает пять режимов организации потока данных. Режимы комбинируются: один процесс может начинаться как http-запрос (режим 1), содержать условную маршрутизацию (режим 5\) и завершаться fan-out уведомлениями (режим 4).
+
+## **Режим 1\. HTTP \-\> цепочка \-\> ответ клиенту**
+
+HTTP endpoint запускает цепочку через bus.request и синхронно ждет финальный ответ с совпадающим trace\_id. Клиент получает результат обработки всей цепочки в одном http response. Подходит для REST API где клиент ожидает результат.
+
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | POST /order | Client sends request with JSON body |
-| 2 | order.validate | Field validation, data normalization |
-| 3 | order.priced | Price calculation from catalog |
-| 4 | order.discounted | Loyalty discount applied by customer_id |
-| 5 | order.reserved | Stock check, warehouse reservation |
-| 6 | order.paid | Charge, payment reference generated |
-| 7 | order.confirmed | order_id generated, final status |
-| 8 | HTTP 201 | bus.request receives response, Response.json to client |
+| 1 | POST /order | Клиент отправляет запрос с json body |
+| 2 | order.validate | Проверка полей, нормализация данных |
+| 3 | order.priced | Расчет цены по каталогу |
+| 4 | order.discounted | Применение скидки лояльности по customer\_id |
+| 5 | order.reserved | Проверка остатков, резервирование на складе |
+| 6 | order.paid | Списание средств, генерация payment reference |
+| 7 | order.confirmed | Формирование order\_id, финальный статус |
+| 8 | HTTP 201 | bus.request получает ответ, Response.json клиенту |
 
-**Key mechanism:** `bus.request` publishes the first event in the chain and creates a waiter keyed on `response_type + trace_id`. When the final handler publishes an event with the same `trace_id`, the waiter fires and returns the envelope to the calling code. On timeout, an error envelope with `code='timeout'` is returned.
+**Ключевой механизм:** bus.request публикует первое событие цепочки и создает waiter по ключу response\_type \+ trace\_id. Когда финальный handler публикует event с тем же trace\_id, waiter срабатывает и возвращает envelope вызывающему коду. При таймауте возвращается error envelope с code='timeout'.
 
-```python
-result = await bus.request('order.validate', data,
-    response_type='order.confirmed', source='http', timeout=10.0)
-```
+result \= await bus.request('order.validate', data,
 
-## Mode 2. Worker / Fire-and-forget
+    response\_type='order.confirmed', source='http', timeout=10.0)
 
-A scheduled task or publish without waiting. The chain runs autonomously; the result is written to a database, log, or external service. No `bus.request`, no HTTP, no waiting for a response.
+## **Режим 2\. Worker / Fire-and-forget**
 
-| # | Event | Description |
+Scheduled task или публикация без ожидания. Цепочка работает автономно, результат пишется в базу, лог или внешний сервис. Нет bus.request, нет http, нет ожидания ответа.
+
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | schedule / publish | Scheduler or external trigger starts the chain |
-| 2 | report.collect | Collect metrics from multiple sources |
-| 3 | report.aggregated | Aggregation: count, total, average, max, min |
-| 4 | report.enriched | Add metadata: period, version, source |
-| 5 | report.formatted | Format into a text report |
-| 6 | report.delivered | Send: log, webhook, email, S3 file |
+| 1 | schedule / publish | Планировщик или внешний триггер запускает цепочку |
+| 2 | report.collect | Сбор метрик из нескольких источников |
+| 3 | report.aggregated | Агрегация: count, total, average, max, min |
+| 4 | report.enriched | Добавление метаданных: период, версия, source |
+| 5 | report.formatted | Форматирование в текстовый отчет |
+| 6 | report.delivered | Отправка: лог, webhook, email, файл в S3 |
 
-```python
 app.bus.schedule('report.collect', ReportTrigger(), interval=3600.0)
+
 await bus.publish('report.collect', ReportTrigger(), source='manual')
-```
 
-## Mode 3. WebSocket -> chain -> reply to sender
+## **Режим 3\. WebSocket \-\> цепочка \-\> ответ отправителю**
 
-A WebSocket client sends an event. The chain processes the data. The final handler returns the response to the specific client via `transport.reply_to_sender(envelope)`. The client's `sid` is stored in `ctx.extra['_ws_sid']` automatically and propagated through the entire chain.
+WebSocket клиент отправляет событие. Цепочка обрабатывает данные. Финальный handler возвращает ответ конкретному клиенту через transport.reply\_to\_sender(envelope). sid клиента сохраняется в ctx.extra\['\_ws\_sid'\] автоматически и прокидывается через всю цепочку.
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | ws: auction.bid | Participant sends a bid via WebSocket |
-| 2 | bid.validate | Check: lot is active, amount exceeds current, balance sufficient |
-| 3 | bid.lock | Optimistic lock for concurrent bids |
-| 4 | bid.persist | Write bid to DB, update current leader |
-| 5 | bid.notify_all | Fan-out: broadcast to all connected via transport.emit |
-| 6 | bid.reply_sender | Reply to initiator via transport.reply_to_sender |
+| 1 | ws: auction.bid | Участник отправляет ставку через WebSocket |
+| 2 | bid.validate | Проверка: лот активен, сумма выше текущей, баланс достаточен |
+| 3 | bid.lock | Оптимистичная блокировка для конкурентных ставок |
+| 4 | bid.persist | Запись ставки в БД, обновление текущего лидера |
+| 5 | bid.notify\_all | Fan-out: broadcast всем подключенным через transport.emit |
+| 6 | bid.reply\_sender | Ответ инициатору через transport.reply\_to\_sender |
 
-## Mode 4. Fan-out (parallel subscribers)
+## **Режим 4\. Fan-out (параллельные подписчики)**
 
-Multiple handlers subscribe to the same event. All receive a copy and work in parallel via `asyncio.gather`. Failure of one does not block the others. Adding a new handler requires no changes to existing blocks and no redeployment of other parts of the system.
+Несколько handlers подписаны на одно событие. Все получают копию данных и работают параллельно через asyncio.gather. Отказ одного не блокирует остальных. Добавление нового обработчика не требует изменения существующих блоков и не требует деплоя других частей системы.
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | order.confirmed | Fan-out starting point (final order event) |
-| 2 | SendEmailHandler | Send confirmation to client |
-| 3 | UpdateInventoryHandler | Deduct items from warehouse stock |
-| 4 | CreateInvoiceHandler | Generate invoice |
-| 5 | TrackAnalyticsHandler | Record metrics |
-| 6 | NotifySlackHandler | Notify the team |
+| 1 | order.confirmed | Стартовая точка fan-out (финальное событие заказа) |
+| 2 | SendEmailHandler | Отправка подтверждения клиенту |
+| 3 | UpdateInventoryHandler | Списание товаров с остатков склада |
+| 4 | CreateInvoiceHandler | Генерация счета |
+| 5 | TrackAnalyticsHandler | Запись метрик |
+| 6 | NotifySlackHandler | Уведомление команды |
 
-**Why this works:** in the classic approach, adding a new side effect requires finding the right place in the code and inserting a call, risking breaking the existing flow. In the event-driven model, a new handler simply subscribes to the event. Existing code is untouched. Testing is isolated.
+**Почему это работает:** в классическом подходе добавление нового side-effect требует найти место в коде и вставить вызов, рискуя сломать existing flow. В событийной модели новый handler просто подписывается на событие. Существующий код не меняется. Тестирование изолированное.
 
-## Mode 5. Conditional routing
+## **Режим 5\. Условная маршрутизация**
 
-A handler decides which event to publish, returning an Envelope directly. `publishes=''`. Enables flow branching without an external orchestrator.
+Handler решает на какое событие публиковать результат, возвращая Envelope напрямую. publishes='' (пустой). Позволяет реализовать ветвление потока без внешнего оркестратора.
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | payment.process | RouterHandler receives payment |
-| 2 | amount > 10000 | payment.manual_review (manual check) |
-| 3 | currency != EUR | payment.convert (currency conversion) |
-| 4 | 3ds required | payment.verify_3ds (confirmation) |
-| 5 | standard path | payment.execute (execution) |
+| 1 | payment.process | RouterHandler получает платеж |
+| 2 | amount \> 10000 | payment.manual\_review (ручная проверка) |
+| 3 | currency \!= EUR | payment.convert (конвертация валюты) |
+| 4 | 3ds required | payment.verify\_3ds (подтверждение) |
+| 5 | standard path | payment.execute (исполнение) |
 
-```python
 async def process(self, data, ctx):
-    if data.amount > 10000:
-        return Envelope.create('payment.manual_review', data,
-            source='RouterHandler', trace_id=ctx.trace_id)
-```
 
-**Important:** when creating an Envelope manually, always pass `trace_id` from `ctx` to preserve end-to-end tracing. Alternatively, use `envelope.forward()` which does this automatically.
+    if data.amount \> 10000:
 
-# 3. Complex application scenarios
+        return Envelope.create('payment.manual\_review', data,
 
-Detailed cases where the event-driven block architecture provides the greatest advantage. Each shows the flow, why khorsyio wins, and what would be harder without the framework.
+            source='RouterHandler', trace\_id=ctx.trace\_id)
 
-## Scenario A. Airdrop campaign with multi-chain distribution
+**Важно:** при создании Envelope вручную передавай trace\_id из ctx чтобы не потерять сквозную трассировку. Или используй envelope.forward() который делает это автоматически.
 
-A typical blockchain task: accept a claim, check eligibility, determine the network, sign the transaction, send it, and monitor status. Each stage is isolated with a clear contract.
+# **3\. Комплексные сценарии применения**
 
-| # | Event | Description |
+Развернутые кейсы где событийная блочная архитектура дает наибольшее преимущество. Для каждого показано: flow, почему khorsyio выигрывает, и что было бы сложнее без фреймворка.
+
+## **Сценарий А. Airdrop-кампания с multi-chain распределением**
+
+Типичная задача в блокчейн-проектах: принять заявку, проверить eligibility, определить сеть, подписать транзакцию, отправить и отслеживать статус. Каждый этап изолирован и имеет четкий контракт.
+
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | airdrop.submit | Accept claim: wallet address, network, campaign_id |
-| 2 | airdrop.verify | Check eligibility: whitelist, balance, previous claims |
-| 3 | airdrop.route | Conditional routing: base / polygon / bsc / arbitrum |
-| 4 | airdrop.sign | Generate EIP-712 signature for the specific network |
-| 5 | airdrop.broadcast | Send transaction via RPC provider |
-| 6 | airdrop.monitor | Monitor status: pending -> confirmed / failed |
-| 7 | airdrop.complete | Fan-out: update DB + notify user + analytics |
+| 1 | airdrop.submit | Принять заявку: адрес кошелька, network, campaign\_id |
+| 2 | airdrop.verify | Проверить eligibility: whitelist, баланс, предыдущие клеймы |
+| 3 | airdrop.route | Условная маршрутизация: base / polygon / bsc / arbitrum |
+| 4 | airdrop.sign | Генерация EIP-712 подписи для конкретной сети |
+| 5 | airdrop.broadcast | Отправка транзакции через RPC провайдер |
+| 6 | airdrop.monitor | Мониторинг статуса: pending \-\> confirmed / failed |
+| 7 | airdrop.complete | Fan-out: обновить БД \+ уведомить пользователя \+ аналитика |
 
-### Why khorsyio wins here
+### **Почему khorsyio здесь выигрывает**
 
-**RPC call isolation.** Each network (base, polygon, bsc) is implemented as a separate handler with its own timeout and error handling. An RPC error on one network does not affect processing on others. In monolithic code this is typically a large switch-case with try-except where an error in one branch can block the entire flow.
+**Изоляция RPC-вызовов.** Каждая сеть (base, polygon, bsc) реализуется отдельным handler с собственным timeout и error handling. Ошибка RPC одной сети не затрагивает обработку других. В монолитном коде это обычно один большой switch-case с try-except, где ошибка в одной ветке может заблокировать весь flow.
 
-**Conditional routing at the route step.** The `airdrop.route` handler analyzes the network from the claim and publishes to the appropriate branch: `airdrop.sign.base`, `airdrop.sign.polygon`, etc. Each branch can have its own signing logic. Adding a new network is a new handler, not a change to existing code.
+**Условная маршрутизация на шаге route.** Handler airdrop.route анализирует network из заявки и публикует событие в нужную ветку: airdrop.sign.base, airdrop.sign.polygon и т.д. Каждая ветка может иметь свою логику подписи. Добавление новой сети \- это новый handler, не правка существующего кода.
 
-**Fan-out at the end.** After transaction confirmation, three actions run in parallel: updating the DB, sending a notification, recording analytics. If the email service is down, balances in the DB are still updated. In synchronous code, a failed email send often breaks the entire processing flow.
+**Fan-out на финале.** После подтверждения транзакции три действия выполняются параллельно: обновление БД, отправка уведомления, запись аналитики. Если email-сервис лежит, балансы в БД все равно обновятся. В синхронном коде падение email-отправки часто ломает всю обработку.
 
-**Tracing.** A single `trace_id` travels through the entire chain from submit to complete. When troubleshooting a specific airdrop, you can query `event_log` by `trace_id` and see exactly which step failed and with what error. In regular code this requires manually threading a `correlation_id` through every call.
+**Трассировка.** Единый trace\_id проходит через всю цепочку от submit до complete. При проблеме с конкретным airdrop можно запросить event\_log по trace\_id и увидеть на каком именно шаге и с какой ошибкой произошел сбой. В обычном коде для этого нужно вручную пробрасывать correlation\_id через каждый вызов.
 
-## Scenario B. Real-time auction via WebSocket
+## **Сценарий Б. Real-time аукцион с WebSocket**
 
-An auction platform with real-time bidding. Requires a synchronous response to the participant and parallel notification of all observers. A combination of modes 3, 4, and 2.
+Аукционная платформа со ставками в реальном времени. Требует синхронного ответа участнику и параллельного уведомления всех наблюдателей. Комбинация режимов 3, 4 и 2\.
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | ws: auction.bid | Participant sends a bid via WebSocket |
-| 2 | bid.validate | Check: lot active, amount exceeds current, balance sufficient |
-| 3 | bid.lock | Optimistic lock for concurrent bids |
-| 4 | bid.persist | Write bid to DB, update current leader |
-| 5 | bid.notify_all | Fan-out: broadcast to all via transport.emit |
-| 6 | bid.reply_sender | Reply to initiator via transport.reply_to_sender |
-| 7 | bid.check_end | Worker: background check whether auction time has expired |
+| 1 | ws: auction.bid | Участник отправляет ставку через WebSocket |
+| 2 | bid.validate | Проверить: лот активен, сумма выше текущей, баланс достаточен |
+| 3 | bid.lock | Оптимистичная блокировка для конкурентных ставок |
+| 4 | bid.persist | Запись ставки в БД, обновление текущего лидера |
+| 5 | bid.notify\_all | Fan-out: broadcast всем через transport.emit |
+| 6 | bid.reply\_sender | Ответ инициатору через transport.reply\_to\_sender |
+| 7 | bid.check\_end | Worker: фоновая проверка не истекло ли время аукциона |
 
-### Why khorsyio wins here
+### **Почему khorsyio здесь выигрывает**
 
-**Natural fit with the WebSocket model.** An event from a WS client lands on the bus as an envelope with `ctx.extra['_ws_sid']`. This is not a REST-to-realtime adaptation; it is a native event-driven approach. The bus processes WS events the same way it processes HTTP events — with the same handlers, metrics, and tracing.
+**Естественное соответствие WebSocket-модели.** Событие от ws клиента сразу попадает на шину как envelope с ctx.extra\['\_ws\_sid'\]. Это не адаптация REST к realtime, а нативный event-driven подход. Шина обрабатывает ws-события точно так же как http-события, с теми же handlers, метриками и трассировкой.
 
-**Separation of response and notification.** `bid.reply_sender` sends a personal response to the specific participant (accepted/rejected). `bid.notify_all` broadcasts an update to all observers. These are two separate handlers, two separate concerns. In typical WS code both actions are usually in one function, and adding notification logic complicates bid processing.
+**Разделение ответа и уведомления.** bid.reply\_sender отправляет персональный ответ конкретному участнику (принята/отклонена). bid.notify\_all рассылает обновление всем наблюдателям. Это два разных handler, два разных concern. В типичном ws-коде оба действия обычно в одной функции, и добавление логики уведомления усложняет обработку ставки.
 
-**Concurrent bids.** `bid.lock` implements optimistic locking as an isolated block. If two bids arrive simultaneously, the bus processes them sequentially (asyncio single-threaded). The lock handler checks the current price in the DB and rejects the losing bid. Locking logic is decoupled from validation and persistence logic.
+**Конкурентные ставки.** bid.lock реализует оптимистичную блокировку как изолированный блок. Если две ставки приходят одновременно, шина обрабатывает их последовательно (asyncio single-threaded), lock handler проверяет текущую цену в БД и отклоняет проигравшую. Логика блокировки отделена от логики валидации и записи.
 
-## Scenario C. Ticket system with automatic classification
+## **Сценарий В. Система заявок (tickets) с автоматической классификацией**
 
-A real example from the demo: a ticket passes through 4 blocks, each enriching a shared `TicketState`. Keyword-based classification, team assignment, postgres persistence.
+Реальный пример из demo: заявка проходит через 4 блока, каждый обогащает единый TicketState. Классификация по ключевым словам, назначение ответственного, сохранение в postgres.
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | ticket.validate | Validation: title >= 3 chars, author >= 2. Normalization |
-| 2 | ticket.classified | Text analysis: determine category and priority by keywords |
-| 3 | ticket.assigned | Assign team by category: billing->finance, technical->engineering |
-| 4 | ticket.created | INSERT to postgres, return id and timestamp |
+| 1 | ticket.validate | Проверка: title \>= 3 символов, author \>= 2\. Нормализация |
+| 2 | ticket.classified | Анализ текста: определение category и priority по ключевым словам |
+| 3 | ticket.assigned | Назначение команды по category: billing-\>finance, technical-\>engineering |
+| 4 | ticket.created | INSERT в postgres, возврат id и timestamp |
 
-### Why khorsyio wins here
+### **Почему khorsyio здесь выигрывает**
 
-**Replacing one block without side effects.** ClassifyHandler currently uses keyword matching. Tomorrow it can be replaced with an ML classifier. The contract does not change: input is TicketState with `status='validated'`, output is TicketState with `category` and `priority`. The other blocks do not know about the replacement.
+**Замена одного блока без последствий.** ClassifyHandler сейчас использует keyword matching. Завтра его можно заменить на ML-классификатор. Контракт не меняется: на входе TicketState со status='validated', на выходе TicketState с category и priority. Остальные блоки не узнают о замене.
 
-**Extending without rework.** Need to add SLA calculation? A new handler `ticket.sla_calculated` between assigned and created. Need Slack notifications for critical tickets? A new handler subscribed to `ticket.created` checking priority. Not a single line of existing code changes.
+**Расширение без переделки.** Нужно добавить SLA-расчет? Новый handler ticket.sla\_calculated между assigned и created. Нужно уведомлять в Slack при critical? Новый handler подписанный на ticket.created с проверкой priority. Ни одна строка существующего кода не меняется.
 
-**Shared TicketState as audit trail.** The `steps` field collects each block's action: `['validate:ok', 'classify:technical/critical', 'assign:engineering_team', 'persist:id=42']`. A single response shows the full ticket path. In the classic approach, an equivalent audit trail requires a separate logging mechanism.
+**Единый TicketState как audit trail.** Поле steps собирает действия каждого блока: \['validate:ok', 'classify:technical/critical', 'assign:engineering\_team', 'persist:id=42'\]. По одному ответу видно весь путь заявки. В классическом подходе для аналогичного audit trail нужен отдельный механизм логирования.
 
-## Scenario D. DeFi: swap transaction processing
+## **Сценарий Г. DeFi: обработка swap-транзакции**
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | swap.init | Receive parameters: token_in, token_out, amount, slippage |
-| 2 | swap.quote | Request quote via external aggregator API |
-| 3 | swap.validate_slippage | Check slippage is within acceptable range |
-| 4 | swap.approve_check | Check token approval for the contract |
-| 5 | swap.build_tx | Build transaction with gas parameters |
-| 6 | swap.sign_submit | Sign and broadcast to network |
-| 7 | swap.monitor | Worker: poll status every N seconds |
-| 8 | swap.finalize | Fan-out: update balances + history + notification |
+| 1 | swap.init | Получить параметры: token\_in, token\_out, amount, slippage |
+| 2 | swap.quote | Запросить котировку через внешний API агрегатора |
+| 3 | swap.validate\_slippage | Проверить slippage в допустимом диапазоне |
+| 4 | swap.approve\_check | Проверить approve токена для контракта |
+| 5 | swap.build\_tx | Построить транзакцию с gas параметрами |
+| 6 | swap.sign\_submit | Подписать и отправить в сеть |
+| 7 | swap.monitor | Worker: опрос статуса каждые N секунд |
+| 8 | swap.finalize | Fan-out: обновить балансы \+ история \+ уведомление |
 
-### Why khorsyio wins here
+### **Почему khorsyio здесь выигрывает**
 
-**Precise error localization.** A swap has many failure points: aggregator API unavailable (swap.quote), slippage exceeded (swap.validate_slippage), gas spiked (swap.build_tx), transaction rejected (swap.sign_submit). Each error is localized in a specific handler with a specific `error.code` and `error.source`. In a monolithic 200-line function, a 'transaction failed' error does not tell you at which exact stage the failure occurred.
+**Точная локализация ошибок.** Swap-процесс имеет множество точек отказа: API агрегатора недоступен (swap.quote), slippage превышен (swap.validate\_slippage), газ вырос (swap.build\_tx), транзакция отклонена (swap.sign\_submit). Каждая ошибка локализована в конкретном handler с конкретным error.code и error.source. В монолитной функции из 200 строк ошибка 'transaction failed' не говорит на каком именно этапе произошел сбой.
 
-**Timeout per handler.** `swap.quote` has `timeout=5s` (external API). `swap.monitor` has `timeout=120s` (waiting for network confirmation). `swap.validate_slippage` has `timeout=1s` (pure calculation). Each block gets a timeout appropriate to its task. With a shared try-except there is one timeout for everything.
+**Timeout per handler.** swap.quote имеет timeout=5s (внешний API). swap.monitor имеет timeout=120s (ожидание подтверждения в сети). swap.validate\_slippage имеет timeout=1s (чистый расчет). Каждый блок получает адекватный своей задаче timeout. В общем try-except один timeout для всего.
 
-**Per-handler metrics.** `bus.metrics.snapshot()` will show that `swap.quote` averages 800ms and `swap.build_tx` 50ms. If `swap.quote` average climbs from 800ms to 3s, the problem is with the aggregator API. Without per-handler metrics, only total swap time is visible, and the bottleneck is unclear.
+**Метрики per handler.** bus.metrics.snapshot() покажет что swap.quote в среднем занимает 800ms, а swap.build\_tx 50ms. Если среднее время swap.quote выросло с 800ms до 3s \- проблема в API агрегатора. Без per-handler метрик видно только общее время swap, и непонятно где bottleneck.
 
-## Scenario E. ETL pipeline with data transformation
+## **Сценарий Д. ETL-пайплайн с трансформацией данных**
 
-| # | Event | Description |
+| \# | Событие | Описание |
 | :---- | :---- | :---- |
-| 1 | etl.ingest | Read raw data from source (S3, API, DB) |
-| 2 | etl.clean | Remove null records, normalize types, deduplicate |
-| 3 | etl.validate | Check business rules, flag invalid records |
-| 4 | etl.enrich | Supplement with reference data |
-| 5 | etl.transform | Apply business transformations, calculate aggregates |
-| 6 | etl.load | Load into the target storage |
-| 7 | etl.report | Generate report: processed, errors, skipped |
+| 1 | etl.ingest | Прочитать сырые данные из источника (S3, API, БД) |
+| 2 | etl.clean | Удалить null-записи, нормализовать типы, дедупликация |
+| 3 | etl.validate | Проверить бизнес-правила, пометить некорректные записи |
+| 4 | etl.enrich | Дополнить данными из справочников |
+| 5 | etl.transform | Применить бизнес-трансформации, рассчитать агрегаты |
+| 6 | etl.load | Загрузить в целевое хранилище |
+| 7 | etl.report | Сформировать отчет: обработано, ошибок, пропущено |
 
-Status-based error strategy via struct: each block checks the previous block's status and if it does not match, passes the data forward without processing. The final `etl.report` receives a state with full information about what happened at each stage.
+Стратегия ошибок через status в struct: каждый блок проверяет статус предыдущего и при несовпадении прокидывает данные дальше без обработки. Финальный etl.report получает state с полной информацией о том что произошло на каждом этапе.
 
-# 4. Error handling strategies
+# **4\. Стратегии обработки ошибок**
 
-The framework provides two approaches to errors. The choice determines the behavior of the entire chain.
+Фреймворк предоставляет два подхода к ошибкам. Выбор определяет поведение всей цепочки.
 
-## Strategy 1. Status in struct (soft mode)
+## **Стратегия 1\. Status в struct (мягкий режим)**
 
-The block writes an error status into the data and returns it. Subsequent blocks check the status and skip processing. Data travels the full chain, collecting information along the way.
+Блок записывает статус ошибки в данные и возвращает их. Следующие блоки проверяют статус и пропускают обработку. Данные проходят всю цепочку до конца, собирая информацию по пути.
 
-```python
-if not data.wallet_address:
-    data.status = 'error: wallet_address required'
-    return data  # continue through the chain without processing
-```
+if not data.wallet\_address:
 
-**When to use:** partial errors are acceptable, errors need to be accumulated across multiple fields, it is important to preserve an audit trail even for invalid data, the client should receive a detailed response about the reason for failure.
+    data.status \= 'error: wallet\_address required'
 
-## Strategy 2. Exception (hard mode)
+    return data  \# дальше по цепочке без обработки
 
-The block raises an exception; the bus catches it and creates an error envelope with `code='handler_error'`. The chain stops. `bus.request` receives the error envelope.
+**Когда использовать:** частичные ошибки допустимы, нужно накапливать ошибки по нескольким полям, важно сохранить audit trail даже при невалидных данных, клиент должен получить подробный ответ о причине отказа.
 
-```python
-if not await self._has_permission(ctx.user_id):
+## **Стратегия 2\. Exception (жесткий режим)**
+
+Блок бросает исключение, шина перехватывает и создает error envelope с code='handler\_error'. Цепочка прерывается. bus.request получает error envelope.
+
+if not await self.\_has\_permission(ctx.user\_id):
+
     raise PermissionError('access denied')
-```
 
-**When to use:** the error is critical and further processing is meaningless, a business logic invariant is violated, a system error occurs (DB unavailable, external service not responding).
+**Когда использовать:** ошибка критическая и дальнейшая обработка бессмысленна, при нарушении инварианта бизнес-логики, при системных ошибках (БД недоступна, внешний сервис не отвечает).
 
-## Combined strategy
+## **Комбинированная стратегия**
 
-In practice, a single chain uses both approaches: validation errors via status (user left a field empty), system errors via exception (RPC connection dropped). `bus.request` handles both correctly: a status error arrives in the final envelope, an exception arrives as an error envelope with `is_error=True`.
+На практике в одной цепочке используются оба подхода: валидационные ошибки через status (пользователь не заполнил поле), системные ошибки через exception (RPC-соединение разорвано). bus.request корректно обрабатывает оба варианта: status-ошибка приходит в финальном envelope, exception приходит как error envelope с is\_error=True.
 
-# 5. Applicability matrix
+# **5\. Матрица применимости**
 
-## High applicability
+## **Высокая применимость**
 
-| Scenario | Rationale | Rating |
+| Сценарий | Обоснование | Оценка |
 | :---- | :---- | :---- |
-| Multi-step business processes (order, payment, onboarding) | Natural decomposition into stages with their own contracts. Each stage is tested in isolation. Replacing one block does not affect others | Excellent |
-| Real-time systems (auctions, chats, trading) | Event model natively matches WebSocket. WS sid automatically in ctx. reply_to_sender for personal responses | Excellent |
-| Blockchain/DeFi operations | Isolated RPC calls, conditional routing by network, fan-out at the end, per-handler timeout for different services | Excellent |
-| Fan-out reactions | Add a new side effect without changing existing code. Fault tolerance: one handler failing does not block others | Excellent |
-| Workers / Scheduled tasks | Fire-and-forget chains, built-in scheduler, metrics and event log for monitoring autonomous processes | Excellent |
-| Integration layers | External API isolated in a handler with its own timeout and retry. Unified error pattern for all integrations | Good |
-| ETL pipelines | Shared state across stages. Status-based error handling. Final report shows per-stage statistics | Good |
-| Systems with audit trail | trace_id is end-to-end, steps in struct, event_log built in, per-handler metrics. No separate infrastructure needed | Good |
+| Многошаговые бизнес-процессы(заказ, платеж, onboarding) | Естественная декомпозиция на этапы со своими контрактами. Каждый этап тестируется изолированно. Замена одного блока не затрагивает остальные | Отлично |
+| Real-time системы(аукционы, чаты, трейдинг) | Событийная модель нативно соответствует WebSocket. ws sid автоматически в ctx. reply\_to\_sender для персональных ответов | Отлично |
+| Blockchain/DeFi операции | Изоляция RPC-вызовов, условная маршрутизация по сетям, fan-out на финале, timeout per handler для разных сервисов | Отлично |
+| Fan-out реакции | Добавление нового side-effect без изменения существующего кода. Отказоустойчивость: падение одного handler не блокирует остальные | Отлично |
+| Worker / Scheduled tasks | Fire-and-forget цепочки, scheduler из коробки, метрики и event log для мониторинга автономных процессов | Отлично |
+| Интеграционные слои | Внешний API изолирован в handler с собственным timeout и retry. Единый error-паттерн для всех интеграций | Хорошо |
+| ETL пайплайны | Единый state через стадии. Status-based error handling. Финальный report показывает статистику каждого этапа | Хорошо |
+| Системы с audit trail | trace\_id сквозной, steps в struct, event\_log встроен, метрики per-handler. Не нужна отдельная инфраструктура | Хорошо |
 
-## Framework overhead
+## **Избыточность фреймворка**
 
-| Scenario | Rationale |
+| Сценарий | Обоснование |
 | :---- | :---- |
-| Simple CRUD without business logic | Accept request, write to DB, return response. The event layer adds no value. A direct call is sufficient |
-| Single-step transformations | No chain, no reason for a bus. A plain async function is simpler |
-| Admin scripts | Migrations, one-off imports. Event-driven architecture solves a non-existent problem |
-| Static API endpoints (health, metadata) | Responses without processing. Overhead with no benefit. In khorsyio these endpoints are wired directly via router.get without the bus |
+| Простые CRUD без бизнес-логики | Принять запрос, записать в БД, вернуть ответ. Событийный слой не добавляет ценности. Достаточно прямого вызова |
+| Одношаговые трансформации | Нет цепочки, нет смысла в шине. Обычная async функция проще |
+| Административные скрипты | Миграции, one-off импорт. Событийная архитектура решает несуществующую проблему |
+| Статические API (health, metadata) | Ответы без обработки. Overhead без пользы. В khorsyio такие endpoint-ы делаются напрямую через router.get без шины |
 
-## Fundamental limitations
+## **Принципиальные ограничения**
 
-| Scenario | Rationale |
+| Сценарий | Обоснование |
 | :---- | :---- |
-| Distributed systems | The bus operates in-process (asyncio.Queue). For inter-service communication you need Kafka, RabbitMQ, or NATS. Khorsyio solves the problem within a single process |
-| CPU-intensive computation | ML inference, crypto mining, rendering. The bottleneck is the CPU, not code organization. The event bus adds overhead without benefit |
-| Microservices with network transport | The framework does not provide transport between services. Each service can use khorsyio internally, but communication between services is out of scope |
+| Распределенные системы | Шина работает in-process (asyncio.Queue). Для inter-service коммуникации нужны Kafka, RabbitMQ, NATS. Khorsyio решает задачу внутри одного процесса |
+| CPU-intensive вычисления | ML inference, crypto mining, рендеринг. Узкое место \- процессор, не организация кода. Событийная шина добавляет overhead без пользы |
+| Микросервисы с сетевым транспортом | Фреймворк не обеспечивает транспорт между сервисами. Каждый сервис может использовать khorsyio внутри себя, но связь между сервисами \- за рамками |
 
-# 6. Monitoring and observability
+# **6\. Мониторинг и наблюдаемость**
 
-Built-in tools with no additional dependencies.
+Встроенные инструменты без дополнительных зависимостей.
 
-| Tool | What it provides |
+| Инструмент | Что предоставляет |
 | :---- | :---- |
-| bus.metrics.snapshot() | Per-handler: processed (count), errors, avg_ms (average time), last_error |
-| bus.event_log.recent(N) | Last N events in a ring buffer. Filter by event_type and/or trace_id. Buffer size is configurable |
-| trace_id | End-to-end identifier. Propagated automatically through forward. Allows reconstructing the full request path |
-| ctx.source | Request source (http, ws:sid, scheduler) available in every handler |
-| Endpoint /metrics | JSON with metrics for all handlers. Added in one line |
-| Endpoint /events | JSON with event log. Supports query parameters n, type, trace |
+| bus.metrics.snapshot() | Per-handler: processed (количество), errors (ошибки), avg\_ms (среднее время), last\_error (последняя ошибка) |
+| bus.event\_log.recent(N) | Последние N событий в ring buffer. Фильтрация по event\_type и/или trace\_id. Размер буфера настраивается |
+| trace\_id | Сквозной идентификатор. Прокидывается автоматически через forward. Позволяет восстановить весь путь запроса |
+| ctx.source | Источник запроса (http, ws:sid, scheduler) доступен в каждом handler |
+| Endpoint /metrics | JSON с метриками всех handlers. Подключается одной строкой |
+| Endpoint /events | JSON с event log. Поддерживает query параметры n, type, trace |
 
-```python
-# metrics endpoint
+\# endpoint метрик
+
 app.router.get('/metrics', lambda req, send: Response.json(send, app.bus.metrics.snapshot()))
 
-# view events for a specific request
-app.bus.event_log.recent(20, trace_id='abc123')
-```
+\# просмотр событий конкретного запроса
 
-# 7. Graceful shutdown
+app.bus.event\_log.recent(20, trace\_id='abc123')
 
-When the application stops, the bus performs a controlled shutdown.
+# **7\. Graceful shutdown**
 
-| Stage | Action |
+При остановке приложения шина выполняет контролируемое завершение.
+
+| Этап | Действие |
 | :---- | :---- |
-| 1. Stop accepting | Flag _running=False, new events are not accepted |
-| 2. Cancel scheduled | All scheduled tasks are cancelled via task.cancel() |
-| 3. Drain queue | Remaining events in the queue are processed within drain_timeout (default 5s) |
-| 4. Resolve waiters | Pending bus.request calls receive an error envelope with code='shutdown' |
-| 5. Close resources | Close HTTP client, database pool, WebSocket connections |
+| 1\. Stop accepting | Флаг \_running=False, новые события не принимаются |
+| 2\. Cancel scheduled | Все scheduled tasks отменяются через task.cancel() |
+| 3\. Drain queue | Оставшиеся события в очереди обрабатываются в течение drain\_timeout (default 5s) |
+| 4\. Resolve waiters | Pending bus.request получают error envelope с code='shutdown' |
+| 5\. Close resources | Закрытие http client, database pool, websocket connections |
 
-# 8. Pre-development checklist
+# **8\. Контрольный список перед разработкой блока**
 
-Every handler must pass this checklist before writing any code.
+Каждый handler должен пройти этот список до написания кода.
 
-| Item | What to define |
+| Пункт | Что определить |
 | :---- | :---- |
-| Input struct | msgspec.Struct with typed fields and defaults. This is the contract with the previous block |
-| Output struct | msgspec.Struct. Contract with the next block. For the pipeline pattern — the same struct |
-| subscribes_to | Event to subscribe to. With Domain namespace the prefix is added automatically |
-| publishes | Event to publish. Empty string for manual control (conditional routing) or terminal block (fan-out receiver) |
-| Dependencies | Which components are needed: db, client, bus, transport. Defined via parameter name in __init__ |
-| timeout | Maximum processing time. Appropriate to the task: calculation 1–5s, external API 15–30s, tx monitoring up to 120s |
-| Error strategy | Status in struct (soft, data continues through) or exception (hard, chain stops) |
-| Namespace | Confirm the handler is in Domain.handlers and namespace is correct |
+| Входная структура | msgspec.Struct с типизированными полями и дефолтами. Это контракт с предыдущим блоком |
+| Выходная структура | msgspec.Struct. Контракт с следующим блоком. При pipeline паттерне \- тот же struct |
+| subscribes\_to | Событие на которое подписан. При namespace Domain автоматически добавит префикс |
+| publishes | Событие которое публикует. Пустая строка при ручном управлении (условная маршрутизация) или терминальном блоке (fan-out receiver) |
+| Зависимости | Какие компоненты нужны: db, client, bus, transport. Определяются через имя параметра в \_\_init\_\_ |
+| timeout | Максимальное время обработки. Адекватно задаче: расчет 1-5s, внешний API 15-30s, мониторинг tx до 120s |
+| Стратегия ошибок | Status в struct (мягкий, данные проходят дальше) или exception (жесткий, цепочка прерывается) |
+| Namespace | Убедиться что handler добавлен в Domain.handlers и namespace корректен |
+
+# **9\. Распространенные ошибки (Troubleshooting & Limitations)**
+
+Ниже приведен список частых ошибок, которые допускает LLM при генерации кода для `khorsyio`. Учитывай их всегда:
+
+1. **DML-запросы в Database**: Встроенные `fetchrow` и `fetchval` (до обновления фреймворка) делают `ROLLBACK` после выполнения из-за отсутствия явного `commit`. При использовании `INSERT ... RETURNING` нужно применять `async with db.engine.begin()` или использовать `execute()`.
+2. **Тип Claim "sub" в JWT**: В библиотеке PyJWT 2.x+ поле `sub` обязано быть строковой переменной. При генерации токена всегда используй `str(user_id)`.
+3. **Роутинг API**: Перекрытие роутов типа `GET /markets/{slug}` и `PUT /markets/{id}` может вызывать ошибку 404/405 из-за багов ранних версий маршрутизатора фреймворка. Старайся располагать статические пути и пути с методами, требующими авторизации (например, PUT), выше в списке `routes`.
+4. **Fixture Scopes в тестах**: `khorsyio.core.bus` инициализирует `asyncio.Queue` в конструкторе. Чтобы `pytest-asyncio` не падал с `Future attached to a different loop`, фикстуры `app` и `client` должны быть уровня `scope="function"`.
+5. **Сообщения об ошибках из API**: Стандартный метод `Response.error` сериализует ответ как `{"error": "<msg>", "code": "..."}`. Поэтому в тестах нужно искать `.json().get("error")`, а не `"message"`.
